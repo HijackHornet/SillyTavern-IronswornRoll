@@ -1,0 +1,288 @@
+@font-face {
+    font-family: "Breathe Fire";
+    src: url("./assets/Breathe%20Fire.otf") format("opentype");
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "PR Viking";
+    src: url("./assets/PR%20Viking.ttf") format("truetype");
+    font-display: swap;
+}
+
+#ironsworn-roll-panel {
+    position: fixed;
+    z-index: 10000;
+    top: 20vh;
+    left: max(16px, calc(50% - 240px));
+    width: min(480px, calc(100vw - 32px));
+    box-sizing: border-box;
+    resize: both;
+    overflow: auto;
+    color: var(--SmartThemeBodyColor);
+    background: var(--SmartThemeBlurTintColor, #20242c);
+    border: 1px solid var(--SmartThemeBorderColor, #687080);
+    border-radius: 8px;
+    box-shadow: 0 12px 30px rgb(0 0 0 / 35%);
+    animation: ironsworn-panel-enter 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes ironsworn-panel-enter {
+    from { opacity: 0; transform: translateY(-14px) scale(0.96); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+#ironsworn-roll-panel .drag-grabber {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    z-index: 2;
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    color: var(--SmartThemeBodyColor);
+    cursor: move;
+    opacity: 0.8;
+}
+
+#ironsworn-roll-panel .drag-grabber:hover { opacity: 1; }
+
+.ironsworn-roll-title {
+    margin: 8px 0 16px;
+    color: var(--SmartThemeBodyColor);
+    font-family: "Breathe Fire", Georgia, serif;
+    font-size: 2.6em;
+    font-weight: 700;
+    line-height: 1;
+    text-align: center;
+    -webkit-text-stroke: 2px #080808;
+    paint-order: stroke fill;
+}
+
+.ironsworn-roll-content {
+    padding: 4px 12px 10px;
+    text-align: center;
+}
+
+.ironsworn-roll-content h2 {
+    margin: 0 0 10px;
+    font-size: 1.2em;
+}
+
+.ironsworn-roll-content p {
+    margin: 0 0 10px;
+    font-size: 0.9em;
+    opacity: 0.8;
+}
+
+.ironsworn-dice-stage {
+    width: 100%;
+    margin: 8px 0 12px;
+}
+
+.ironsworn-roll-sprites {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: end;
+    gap: 6px;
+}
+
+.ironsworn-roll-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(92px, auto);
+    align-items: center;
+    gap: 12px;
+}
+
+.ironsworn-roll-sprite {
+    position: relative;
+    display: flex;
+    min-width: 0;
+    height: 76px;
+    min-height: 76px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    padding: 0;
+}
+
+.ironsworn-roll-sprite-hidden {
+    opacity: 0;
+    transform: translateY(18px) scale(0.82);
+}
+
+.ironsworn-roll-sprite:not(.ironsworn-roll-sprite-hidden) {
+    animation: ironsworn-die-reveal 500ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.ironsworn-roll-sprite img {
+    width: 76px;
+    height: 76px;
+    max-width: 100%;
+    object-fit: contain;
+    object-position: center;
+    opacity: 0.78;
+}
+
+.ironsworn-roll-number {
+    position: absolute;
+    z-index: 1;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: inherit;
+    font-family: "PR Viking", Georgia, serif;
+    font-size: 3em;
+    font-weight: 700;
+    line-height: 1;
+    -webkit-text-stroke: 3px #080808;
+    paint-order: stroke fill;
+}
+
+.ironsworn-roll-sprite-combining {
+    z-index: 2;
+    animation: ironsworn-die-combine 650ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.ironsworn-roll-sprite-total {
+    z-index: 3;
+    animation: ironsworn-total-land 450ms cubic-bezier(0.22, 1, 0.36, 1) both !important;
+}
+
+.ironsworn-roll-sprite-fading {
+    animation: ironsworn-die-fade 350ms ease-out both;
+}
+
+@keyframes ironsworn-die-reveal {
+    from { opacity: 0; transform: translateY(18px) scale(0.82); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes ironsworn-die-combine {
+    to { transform: translate(var(--combine-x), var(--combine-y)) scale(0.86); opacity: 0.72; }
+}
+
+@keyframes ironsworn-die-fade {
+    from { transform: translate(var(--combine-x), var(--combine-y)) scale(0.86); opacity: 0.72; }
+    to { transform: translate(var(--combine-x), var(--combine-y)) scale(0.86); opacity: 0; }
+}
+
+@keyframes ironsworn-total-land {
+    from { transform: scale(1.25); filter: brightness(1.7); }
+    to { transform: scale(1); filter: brightness(1); }
+}
+
+.ironsworn-roll-sprite-player {
+    color: #d6c912;
+}
+
+.ironsworn-roll-sprite-player.ironsworn-roll-sprite-negative {
+    color: #8f2626;
+}
+
+.ironsworn-roll-sprite-challenge {
+    color: #8f2626;
+}
+
+.ironsworn-roll-sprite img {
+    filter: brightness(0.62);
+}
+
+.ironsworn-roll-sprite-challenge.ironsworn-roll-sprite-challenge-threat img {
+    filter: brightness(0.62) sepia(1) saturate(7) hue-rotate(315deg) drop-shadow(0 0 7px rgb(190 35 35 / 85%));
+}
+
+.ironsworn-result {
+    display: block;
+    font-family: "Breathe Fire", Georgia, serif;
+    font-size: 1.5em;
+    text-transform: capitalize;
+    -webkit-text-stroke: 1px #080808;
+    paint-order: stroke fill;
+}
+
+.ironsworn-result-strong-hit { color: #7fd694; }
+.ironsworn-result-weak-hit { color: #f0c674; }
+.ironsworn-result-miss { color: #e07878; }
+
+.ironsworn-roll-actions {
+    display: flex;
+    gap: 8px;
+    padding: 0 16px 16px;
+}
+
+.ironsworn-roll-layout .ironsworn-roll-actions {
+    min-width: 92px;
+    flex-direction: column;
+    padding: 0;
+}
+
+.ironsworn-roll-actions button {
+    flex: 1;
+    min-height: 34px;
+    color: inherit;
+    background: var(--SmartThemeBlurTintColor, #303642);
+    border: 1px solid var(--SmartThemeBorderColor, #687080);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.ironsworn-roll-layout .ironsworn-roll-actions button {
+    width: 100%;
+}
+
+.ironsworn-roll-actions button img {
+    width: 24px;
+    height: 24px;
+    margin-right: 5px;
+    vertical-align: middle;
+    opacity: 0.8;
+}
+
+.ironsworn-roll-actions button i {
+    margin-right: 5px;
+}
+
+.ironsworn-roll-actions button:hover {
+    background: var(--SmartThemeQuoteColor, #485264);
+}
+
+.ironsworn-roll-start {
+    width: 100%;
+    min-height: 92px !important;
+    color: var(--SmartThemeBodyColor);
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    font-family: "Breathe Fire", Georgia, serif;
+    font-size: 3em;
+    font-weight: 700;
+    line-height: 1;
+    text-transform: uppercase;
+    -webkit-text-stroke: 2px #080808;
+    paint-order: stroke fill;
+}
+
+.ironsworn-roll-start:hover {
+    color: var(--SmartThemeQuoteColor, #485264);
+    background: transparent !important;
+}
+
+@media (max-width: 420px) {
+    .ironsworn-roll-sprites {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 3px;
+    }
+
+    .ironsworn-roll-sprite {
+        height: 68px;
+        min-height: 68px;
+    }
+
+    .ironsworn-roll-sprite img {
+        width: 68px;
+        height: 68px;
+    }
+}

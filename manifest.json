@@ -1,0 +1,9 @@
+{
+	"display_name": "Ironsworn Roll",
+	"loading_order": 250,
+	"js": "index.js",
+	"css": "style.css",
+	"author": "Hijack Hornet",
+	"version": "1.0.0",
+	"auto_update": false
+}
