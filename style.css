@@ -16,6 +16,7 @@
     top: 20vh;
     left: max(16px, calc(50% - 240px));
     width: min(480px, calc(100vw - 32px));
+    min-height: 180px;
     box-sizing: border-box;
     resize: both;
     overflow: auto;
@@ -74,6 +75,19 @@
     margin: 0 0 10px;
     font-size: 0.9em;
     opacity: 0.8;
+}
+
+.ironsworn-move-text {
+    white-space: pre-line;
+    text-align: left;
+}
+
+.ironsworn-roll-outcome {
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 8px 10px;
+    border-top: 1px solid var(--SmartThemeBorderColor, #687080);
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #687080);
 }
 
 .ironsworn-dice-stage {
@@ -209,6 +223,7 @@
 
 .ironsworn-roll-actions {
     display: flex;
+    flex-direction: column;
     gap: 8px;
     padding: 0 16px 16px;
 }
@@ -220,7 +235,7 @@
 }
 
 .ironsworn-roll-actions button {
-    flex: 1;
+    flex: 0 0 auto;
     min-height: 34px;
     color: inherit;
     background: var(--SmartThemeBlurTintColor, #303642);
@@ -247,6 +262,12 @@
 
 .ironsworn-roll-actions button:hover {
     background: var(--SmartThemeQuoteColor, #485264);
+}
+
+.ironsworn-roll-actions button.ironsworn-choice-selected {
+    color: var(--SmartThemeBodyColor);
+    background: var(--SmartThemeQuoteColor, #485264);
+    border-color: var(--SmartThemeBodyColor);
 }
 
 .ironsworn-roll-start {
