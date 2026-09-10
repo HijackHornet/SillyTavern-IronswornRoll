@@ -2010,7 +2010,7 @@ function generateCharacterTracker(character, selectedAssets, bonds, vows, worldT
 				const abilityLines = companion.abilities.map((a, idx) => {
 					const prefix = idx === 0 ? "((PILLS))" : "🔒";
 					const cleaned = cleanAbilityText(a.label);
-					return `${prefix} ${cleaned}`;
+					return `${prefix} Ability ${idx + 1} (${cleaned})`;
 				});
 				tracker += abilityLines.join(",");
 				tracker += "\n";
@@ -3197,9 +3197,8 @@ async function handleIronswornCharacterInit() {
 		}
 
 		addInventoryItemBtn.addEventListener("click", () => {
-			const newItem = { name: "", emoji: "🏹", category: "gear", rarity: "Common" };
-			inventoryItems.push(newItem);
-			addInventoryRow(newItem);
+			// addInventoryRow() already pushes the item into inventoryItems
+			addInventoryRow();
 		});
 
 		// === STEP 3: ASSETS ===
