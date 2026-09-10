@@ -12,6 +12,7 @@ const DATASWORN_FALLBACK_URL =
 	"https://raw.githubusercontent.com/rsek/datasworn/main/datasworn/classic/classic.json";
 let moveCatalogPromise;
 let dataswornPromise;
+let assetCatalogPromise;
 const DEFAULT_SETTINGS = {
 	autoRoll: false,
 	playSfx: true,
@@ -258,6 +259,230 @@ export async function resolveMove(moveName) {
 	throw new Error(
 		`Move does not exist: "${moveName}". Available moves: ${availableMoves.join(", ")}`,
 	);
+}
+
+function extractAssetCatalog(datasworn) {
+	const assets = [];
+	for (const collection of Object.values(datasworn.assets ?? {})) {
+		if (typeof collection.contents !== "object" || collection.contents === null)
+			continue;
+		for (const asset of Object.values(collection.contents)) {
+			if (asset.type !== "asset" || !asset.name) continue;
+			assets.push(asset);
+		}
+	}
+	return assets;
+}
+
+async function loadAssetCatalog() {
+	if (!assetCatalogPromise) {
+		assetCatalogPromise = loadDatasworn().then(extractAssetCatalog);
+	}
+	return assetCatalogPromise;
+}
+
+async function resolveAsset(assetName) {
+	const assets = await loadAssetCatalog();
+	const requestedName = normalizeMoveName(assetName);
+	const exactMatch = assets.find(
+		(asset) => normalizeMoveName(asset.name) === requestedName,
+	);
+	if (exactMatch) return exactMatch;
+
+	const matchingAssets = assets.filter((asset) => {
+		const normalizedName = normalizeMoveName(asset.name);
+		return (
+			normalizedName.includes(requestedName) ||
+			requestedName.includes(normalizedName)
+		);
+	});
+	if (matchingAssets.length === 1) return matchingAssets[0];
+	if (matchingAssets.length > 1) {
+		return matchingAssets.sort(
+			(left, right) =>
+				getEditDistance(normalizeMoveName(left.name), requestedName) -
+				getEditDistance(normalizeMoveName(right.name), requestedName),
+		)[0];
+	}
+
+	const closestAsset = assets
+		.map((asset) => ({
+			asset,
+			distance: getEditDistance(normalizeMoveName(asset.name), requestedName),
+		}))
+		.sort((left, right) => left.distance - right.distance)[0];
+	const maximumDistance = Math.max(3, Math.floor(requestedName.length / 3));
+	if (closestAsset && closestAsset.distance <= maximumDistance)
+		return closestAsset.asset;
+	return null;
+}
+
+// A level of 1-3 unlocks that many of the asset's three abilities, in order.
+async function resolveCharacterAssets(assetInputs) {
+	const result = { resolved: [], unrecognized: [] };
+	if (!Array.isArray(assetInputs)) return result;
+	for (const input of assetInputs) {
+		const name = String(input?.name ?? "").trim();
+		if (!name) continue;
+		const levelNumber = Number(input?.level);
+		const level = Number.isFinite(levelNumber)
+			? Math.min(3, Math.max(1, Math.round(levelNumber)))
+			: 1;
+		const assetDef = await resolveAsset(name);
+		if (!assetDef) {
+			result.unrecognized.push(name);
+			continue;
+		}
+		const abilities = (assetDef.abilities ?? []).slice(0, level);
+		result.resolved.push({ name: assetDef.name, level, abilities });
+	}
+	return result;
+}
+
+// Some assets (Alchemist's Create Elixir, Augur, etc.) grant an entirely new move.
+function findAssetSubMove(resolvedAssets, requestedMoveName) {
+	const requestedName = normalizeMoveName(requestedMoveName);
+	for (const asset of resolvedAssets) {
+		for (const ability of asset.abilities) {
+			if (!ability.moves) continue;
+			for (const subMove of Object.values(ability.moves)) {
+				if (subMove?.name && normalizeMoveName(subMove.name) === requestedName) {
+					return subMove;
+				}
+			}
+		}
+	}
+	return null;
+}
+
+async function resolveMoveForRoll(requestedMoveName, resolvedAssets) {
+	const assetMove = findAssetSubMove(resolvedAssets, requestedMoveName);
+	if (assetMove) return assetMove;
+	return resolveMove(requestedMoveName);
+}
+
+// Best-effort extraction of the mechanical effect from an ability's rule text.
+function parseAssetAbilityEffects(text) {
+	const effects = {};
+	const bonusMatch = text.match(/\badd \+(\d+)\b/i);
+	if (bonusMatch) effects.bonus = Number(bonusMatch[1]);
+	if (/\breroll any dice\b/i.test(text)) effects.reroll = true;
+	const momentumMatch = text.match(
+		/take \+(\d+) momentum(?:\s+equal to[^.]+)? on (?:an?|the) ([a-z ]+?)(?=[.,]|$)/i,
+	);
+	if (momentumMatch) {
+		effects.momentumBonus = Number(momentumMatch[1]);
+		effects.momentumCondition = momentumMatch[2].trim().toLocaleLowerCase();
+	}
+	const harmMatch = text.match(/inflict \+(\d+) harm/i);
+	if (harmMatch) effects.harmBonus = Number(harmMatch[1]);
+	const experienceMatch = text.match(/take \+(\d+) experience/i);
+	if (experienceMatch) effects.experienceBonus = Number(experienceMatch[1]);
+	return effects;
+}
+
+function collectAssetEnhancements(move, resolvedAssets) {
+	const candidates = [];
+	for (const asset of resolvedAssets) {
+		for (const ability of asset.abilities) {
+			const entries = ability.enhance_moves;
+			if (!Array.isArray(entries)) continue;
+			for (const entry of entries) {
+				if (entry.roll_type !== move.roll_type) continue;
+				const enhancesList = entry.enhances;
+				if (Array.isArray(enhancesList) && !enhancesList.includes(move._id))
+					continue;
+				candidates.push({
+					assetName: asset.name,
+					text: ability.text,
+					conditionText:
+						entry.trigger?.conditions
+							?.map((condition) => condition.text)
+							.filter(Boolean)
+							.join("; ") || null,
+					effects: parseAssetAbilityEffects(ability.text),
+				});
+			}
+		}
+	}
+	return candidates;
+}
+
+function sumPreRollAssetEffects(selectedCandidates) {
+	let bonus = 0;
+	let reroll = false;
+	for (const candidate of selectedCandidates) {
+		if (candidate.effects.bonus) bonus += candidate.effects.bonus;
+		if (candidate.effects.reroll) reroll = true;
+	}
+	return { bonus, reroll };
+}
+
+function sumConditionalAssetEffects(selectedCandidates, hitType) {
+	let momentum = 0;
+	let harm = 0;
+	let experience = 0;
+	const isHit = hitType === "strong hit" || hitType === "weak hit";
+	for (const candidate of selectedCandidates) {
+		const effects = candidate.effects;
+		if (effects.momentumBonus && effects.momentumCondition) {
+			const condition = effects.momentumCondition;
+			const conditionMet = condition.includes("strong hit")
+				? hitType === "strong hit"
+				: condition.includes("weak hit")
+					? hitType === "weak hit"
+					: condition.includes("hit")
+						? isHit
+						: false;
+			if (conditionMet) momentum += effects.momentumBonus;
+		}
+		if (effects.harmBonus && isHit) harm += effects.harmBonus;
+		if (effects.experienceBonus && isHit) experience += effects.experienceBonus;
+	}
+	return { momentum, harm, experience };
+}
+
+function waitForAssetSelection(panel, candidates, moveName) {
+	const content = panel.querySelector(".ironsworn-roll-content");
+	const actions = panel.querySelector(".ironsworn-roll-actions");
+	content.replaceChildren();
+	actions?.replaceChildren();
+	const title = document.createElement("h2");
+	title.className = "ironsworn-roll-title";
+	title.textContent = `${moveName}: Use an asset ability?`;
+	const list = document.createElement("div");
+	list.className = "ironsworn-asset-choice-list";
+	const selected = new Set();
+	candidates.forEach((candidate, index) => {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "ironsworn-asset-choice-option";
+		const conditionLabel = candidate.conditionText
+			? ` (${candidate.conditionText})`
+			: "";
+		button.textContent = `${candidate.assetName}${conditionLabel}: ${formatRuleText(candidate.text)}`;
+		button.addEventListener("click", () => {
+			button.classList.toggle("ironsworn-choice-selected");
+			if (selected.has(index)) selected.delete(index);
+			else selected.add(index);
+		});
+		list.append(button);
+	});
+	content.append(title, list);
+	return new Promise((resolve) => {
+		const confirmButton = document.createElement("button");
+		confirmButton.type = "button";
+		confirmButton.textContent = "Roll";
+		confirmButton.addEventListener(
+			"click",
+			() => {
+				panel.remove();
+				resolve(candidates.filter((_, index) => selected.has(index)));
+			},
+			{ once: true },
+		);
+		actions.append(confirmButton);
+	});
 }
 
 export async function resolveOracle(oracleName) {
@@ -941,7 +1166,8 @@ function waitForContinue(panel, roll, actionName) {
 export async function executeIronswornRoll(args) {
 	const requestedMoveName = String(args?.move_name ?? "").trim();
 	if (!requestedMoveName) throw new Error("move_name is required");
-	const move = await resolveMove(requestedMoveName);
+	const characterAssets = await resolveCharacterAssets(args?.assets);
+	const move = await resolveMoveForRoll(requestedMoveName, characterAssets.resolved);
 	const currentSupply =
 		args?.current_supply !== undefined
 			? normalizeNumber(args.current_supply, "current_supply")
@@ -1015,6 +1241,8 @@ export async function executeIronswornRoll(args) {
 			);
 		}
 		if (penaltyAllocation) response.penalty_allocation = penaltyAllocation;
+		if (characterAssets.unrecognized.length)
+			response.unrecognized_assets = characterAssets.unrecognized;
 		return JSON.stringify(response);
 	}
 	if (move.roll_type === "progress_roll") {
@@ -1036,6 +1264,19 @@ export async function executeIronswornRoll(args) {
 				: null;
 		if (currentProgress === null) {
 			throw new Error("current_progress is required for progress rolls");
+		}
+
+		const progressAssetCandidates = collectAssetEnhancements(
+			move,
+			characterAssets.resolved,
+		);
+		let selectedProgressAssets = [];
+		if (progressAssetCandidates.length > 0) {
+			selectedProgressAssets = await waitForAssetSelection(
+				getPanel(),
+				progressAssetCandidates,
+				move.name,
+			);
 		}
 
 		const panel = getPanel();
@@ -1070,12 +1311,18 @@ export async function executeIronswornRoll(args) {
 			epic: { strong_hit: 5, weak_hit: 4, miss: 0 },
 		};
 
+		const progressAssetEffects = sumConditionalAssetEffects(
+			selectedProgressAssets,
+			roll.hitType,
+		);
 		const response = {
 			move: move.name,
 			hit_type: roll.hitType,
 			isMatch: roll.isMatch,
 			quest_rank: questRank,
-			experience: experienceTable[questRank][roll.hitType.replace(" ", "_")],
+			experience:
+				experienceTable[questRank][roll.hitType.replace(" ", "_")] +
+				progressAssetEffects.experience,
 			outcome: formatRuleText(outcomeText),
 		};
 		if (selectedChoice !== null) response.choice = selectedChoice;
@@ -1083,6 +1330,15 @@ export async function executeIronswornRoll(args) {
 			response.narrative_choices = outcomeChoices.options.map(
 				(option) => option.label,
 			);
+		if (selectedProgressAssets.length > 0)
+			response.assets_used = selectedProgressAssets.map((candidate) => ({
+				asset: candidate.assetName,
+				ability: formatRuleText(candidate.text),
+			}));
+		if (progressAssetEffects.experience)
+			response.asset_experience_bonus = progressAssetEffects.experience;
+		if (characterAssets.unrecognized.length)
+			response.unrecognized_assets = characterAssets.unrecognized;
 		return JSON.stringify(response);
 	}
 	if (move.roll_type !== "action_roll") {
@@ -1099,12 +1355,26 @@ export async function executeIronswornRoll(args) {
 		throw new Error("momentum is required for an action roll");
 	const stat = normalizeNumber(args?.stat, "stat");
 	if (!Number.isInteger(stat)) throw new Error("stat must be an integer");
+	const actionName = move.name;
+
+	const assetCandidates = collectAssetEnhancements(move, characterAssets.resolved);
+	let selectedAssets = [];
+	if (assetCandidates.length > 0) {
+		selectedAssets = await waitForAssetSelection(
+			getPanel(),
+			assetCandidates,
+			actionName,
+		);
+	}
+	const preRollAssetEffects = sumPreRollAssetEffects(selectedAssets);
+
 	const rollArgs = {
 		stats_bonus: stat,
-		additional_bonus: args?.additional_bonus,
+		additional_bonus:
+			normalizeNumber(args.additional_bonus, "additional_bonus") +
+			preRollAssetEffects.bonus,
 		momentum: args?.momentum,
 	};
-	const actionName = move.name;
 
 	const panel = getPanel();
 	const settings = getSettings();
@@ -1116,7 +1386,8 @@ export async function executeIronswornRoll(args) {
 	}
 
 	if (!settings.autoRoll) await rollStarted;
-	const roll = calculateIronswornRoll(rollArgs);
+	let roll = calculateIronswornRoll(rollArgs);
+	if (preRollAssetEffects.reroll) roll = calculateIronswornRoll(rollArgs);
 	renderDice(panel, roll);
 	await animateRoll(panel, roll);
 
@@ -1137,6 +1408,10 @@ export async function executeIronswornRoll(args) {
 	} else {
 		panel.remove();
 	}
+	const conditionalAssetEffects = sumConditionalAssetEffects(
+		selectedAssets,
+		choice.hitType,
+	);
 	const response = {
 		move: move.name,
 		hit_type: choice.hitType,
@@ -1150,6 +1425,22 @@ export async function executeIronswornRoll(args) {
 			(option) => option.label,
 		);
 	if (oracleResults.length > 0) response.oracle_results = oracleResults;
+	if (selectedAssets.length > 0)
+		response.assets_used = selectedAssets.map((candidate) => ({
+			asset: candidate.assetName,
+			ability: formatRuleText(candidate.text),
+		}));
+	if (preRollAssetEffects.bonus)
+		response.asset_bonus_applied = preRollAssetEffects.bonus;
+	if (preRollAssetEffects.reroll) response.asset_reroll_used = true;
+	if (conditionalAssetEffects.momentum)
+		response.asset_momentum_bonus = conditionalAssetEffects.momentum;
+	if (conditionalAssetEffects.harm)
+		response.asset_harm_bonus = conditionalAssetEffects.harm;
+	if (conditionalAssetEffects.experience)
+		response.asset_experience_bonus = conditionalAssetEffects.experience;
+	if (characterAssets.unrecognized.length)
+		response.unrecognized_assets = characterAssets.unrecognized;
 	return JSON.stringify(response);
 }
 
@@ -1443,15 +1734,17 @@ async function addIronswornLorebookEntry(lorebookName, entryData) {
 
 	bookData.entries[nextUid] = entry;
 
-	// Save lorebook
-	await ctx.saveWorldInfo?.(lorebookName, bookData);
+	// Save immediately; the shared debounced save can otherwise be cancelled
+	// by another in-flight saveWorldInfo call before it ever writes to disk.
+	await ctx.saveWorldInfo?.(lorebookName, bookData, true);
+	await ctx.updateWorldInfoList?.();
 
 	// Refresh UI
 	if (ctx.reloadWorldInfoEditor) {
 		ctx.reloadWorldInfoEditor(lorebookName);
 	}
-	if (ctx.eventSource && ctx.event_types?.WORLD_INFO_UPDATED) {
-		ctx.eventSource.emit(ctx.event_types.WORLD_INFO_UPDATED, lorebookName);
+	if (ctx.eventSource && ctx.event_types?.WORLDINFO_UPDATED) {
+		ctx.eventSource.emit(ctx.event_types.WORLDINFO_UPDATED, lorebookName, bookData);
 	}
 
 	return `${lorebookName}::${nextUid}`;
@@ -1719,7 +2012,7 @@ function generateCharacterTracker(character, selectedAssets, bonds, vows, worldT
 					const cleaned = cleanAbilityText(a.label);
 					return `${prefix} ${cleaned}`;
 				});
-				tracker += abilityLines.join(`, `);
+				tracker += abilityLines.join(",");
 				tracker += "\n";
 			}
 		});
@@ -1738,13 +2031,13 @@ function generateCharacterTracker(character, selectedAssets, bonds, vows, worldT
 			tracker += `- ${asset.name} (${typeName})\n`;
 			
 			if (asset.abilities && asset.abilities.length > 0) {
+				tracker += `  `;
 				const abilityLines = asset.abilities.map((a, idx) => {
-					const lockIcon = idx === 0 ? "" : "🔒";
-					// Remove markdown links and newlines, keep full text
-					const fullText = (a.label || a.text || "").replace(/\[([^\]]+)\]\(id:[^\)]+\)/g, "$1").replace(/\n/g, " ").replace(/\s+/g, " ");
-					return `  ((PILLS))${lockIcon} Ability ${idx + 1} (${fullText})`;
+					const prefix = idx === 0 ? "((PILLS))" : "🔒";
+					const cleaned = cleanAbilityText(a.label || a.text || "");
+					return `${prefix} Ability ${idx + 1} (${cleaned})`;
 				});
-				tracker += abilityLines.join("\n");
+				tracker += abilityLines.join(",");
 				tracker += "\n";
 			}
 		});
@@ -3298,14 +3591,15 @@ async function handleIronswornCharacterInit() {
 									if (typeof truthValue === 'string') {
 										truthContent += `**${label}**: ${truthValue}\n\n`;
 									} else if (typeof truthValue === 'number') {
-										truthContent += `**${label}**: Option ${truthValue}\n\n`;
+										const description = truths[key]?.options?.[truthValue]?.description;
+										truthContent += `**${label}**: ${formatRuleText(description ?? `Option ${truthValue}`)}\n\n`;
 									}
 								});
 
 								await addIronswornLorebookEntry(lorebookName, {
-									title: `${charName} - World Truths`,
+									key: [charName, "world truths"],
+									comment: `${charName} - World Truths`,
 									content: truthContent,
-									tags: ["ironsworn", "character", "world-truths"],
 								});
 							} catch (e) {
 								console.warn("Could not generate world truths lorebook entry:", e);
@@ -3428,7 +3722,7 @@ export function registerIronswornRollTool() {
 		name: TOOL_NAME,
 		displayName: "Ironsworn Roll",
 		description:
-			"Roll a Classic Ironsworn move by name. Move names are fuzzy-matched. Supply the stat bonus as an integer, plus any additional bonus and current momentum. The result includes the exact strong hit, weak hit, or miss outcome text from Datasworn. When momentum is greater than a losing challenge die, show the player a choice to reset momentum and remove every losing die below momentum. Wait for that choice before returning.",
+			"Roll a Classic Ironsworn move by name. Move names are fuzzy-matched. Supply the stat bonus as an integer, plus any additional bonus and current momentum. The result includes the exact strong hit, weak hit, or miss outcome text from Datasworn. When momentum is greater than a losing challenge die, show the player a choice to reset momentum and remove every losing die below momentum. Wait for that choice before returning. Pass the character's assets so the tool can offer their abilities as an in-panel choice whenever they apply to this move (no need to track once-per-fight limits yourself; the tool offers them every time they are relevant).",
 		parameters: {
 			type: "object",
 			properties: {
@@ -3463,6 +3757,25 @@ export function registerIronswornRollTool() {
 					type: "number",
 					description:
 						"Progress boxes filled on the track (0-10). Required for progress rolls like Fulfill Your Vow or End the Fight. Momentum is ignored on progress rolls per Ironsworn rules.",
+				},
+				assets: {
+					type: "array",
+					description:
+						"The character's equipped assets. Send only the asset name and its level (1-3, how many abilities are marked); the tool looks up the asset's real abilities and offers any that apply to this move as an in-panel choice.",
+					items: {
+						type: "object",
+						properties: {
+							name: {
+								type: "string",
+								description: "The asset's name, e.g. Archer or Cave Lion.",
+							},
+							level: {
+								type: "number",
+								description: "How many of the asset's abilities are marked (1-3).",
+							},
+						},
+						required: ["name", "level"],
+					},
 				},
 			},
 			required: ["move_name"],

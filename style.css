@@ -270,6 +270,33 @@
     border-color: var(--SmartThemeBodyColor);
 }
 
+.ironsworn-asset-choice-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0 16px 12px;
+}
+
+.ironsworn-asset-choice-option {
+    text-align: left;
+    padding: 8px 10px;
+    color: inherit;
+    background: var(--SmartThemeBlurTintColor, #303642);
+    border: 1px solid var(--SmartThemeBorderColor, #687080);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.ironsworn-asset-choice-option:hover {
+    background: var(--SmartThemeQuoteColor, #485264);
+}
+
+.ironsworn-asset-choice-option.ironsworn-choice-selected {
+    color: var(--SmartThemeBodyColor);
+    background: var(--SmartThemeQuoteColor, #485264);
+    border-color: var(--SmartThemeBodyColor);
+}
+
 .ironsworn-roll-start {
     width: 100%;
     min-height: 92px !important;
