@@ -12,7 +12,6 @@ const DATASWORN_FALLBACK_URL =
 	"https://raw.githubusercontent.com/rsek/datasworn/main/datasworn/classic/classic.json";
 let moveCatalogPromise;
 let dataswornPromise;
-let assetCatalogPromise;
 const DEFAULT_SETTINGS = {
 	autoRoll: false,
 	playSfx: true,
@@ -259,230 +258,6 @@ export async function resolveMove(moveName) {
 	throw new Error(
 		`Move does not exist: "${moveName}". Available moves: ${availableMoves.join(", ")}`,
 	);
-}
-
-function extractAssetCatalog(datasworn) {
-	const assets = [];
-	for (const collection of Object.values(datasworn.assets ?? {})) {
-		if (typeof collection.contents !== "object" || collection.contents === null)
-			continue;
-		for (const asset of Object.values(collection.contents)) {
-			if (asset.type !== "asset" || !asset.name) continue;
-			assets.push(asset);
-		}
-	}
-	return assets;
-}
-
-async function loadAssetCatalog() {
-	if (!assetCatalogPromise) {
-		assetCatalogPromise = loadDatasworn().then(extractAssetCatalog);
-	}
-	return assetCatalogPromise;
-}
-
-async function resolveAsset(assetName) {
-	const assets = await loadAssetCatalog();
-	const requestedName = normalizeMoveName(assetName);
-	const exactMatch = assets.find(
-		(asset) => normalizeMoveName(asset.name) === requestedName,
-	);
-	if (exactMatch) return exactMatch;
-
-	const matchingAssets = assets.filter((asset) => {
-		const normalizedName = normalizeMoveName(asset.name);
-		return (
-			normalizedName.includes(requestedName) ||
-			requestedName.includes(normalizedName)
-		);
-	});
-	if (matchingAssets.length === 1) return matchingAssets[0];
-	if (matchingAssets.length > 1) {
-		return matchingAssets.sort(
-			(left, right) =>
-				getEditDistance(normalizeMoveName(left.name), requestedName) -
-				getEditDistance(normalizeMoveName(right.name), requestedName),
-		)[0];
-	}
-
-	const closestAsset = assets
-		.map((asset) => ({
-			asset,
-			distance: getEditDistance(normalizeMoveName(asset.name), requestedName),
-		}))
-		.sort((left, right) => left.distance - right.distance)[0];
-	const maximumDistance = Math.max(3, Math.floor(requestedName.length / 3));
-	if (closestAsset && closestAsset.distance <= maximumDistance)
-		return closestAsset.asset;
-	return null;
-}
-
-// A level of 1-3 unlocks that many of the asset's three abilities, in order.
-async function resolveCharacterAssets(assetInputs) {
-	const result = { resolved: [], unrecognized: [] };
-	if (!Array.isArray(assetInputs)) return result;
-	for (const input of assetInputs) {
-		const name = String(input?.name ?? "").trim();
-		if (!name) continue;
-		const levelNumber = Number(input?.level);
-		const level = Number.isFinite(levelNumber)
-			? Math.min(3, Math.max(1, Math.round(levelNumber)))
-			: 1;
-		const assetDef = await resolveAsset(name);
-		if (!assetDef) {
-			result.unrecognized.push(name);
-			continue;
-		}
-		const abilities = (assetDef.abilities ?? []).slice(0, level);
-		result.resolved.push({ name: assetDef.name, level, abilities });
-	}
-	return result;
-}
-
-// Some assets (Alchemist's Create Elixir, Augur, etc.) grant an entirely new move.
-function findAssetSubMove(resolvedAssets, requestedMoveName) {
-	const requestedName = normalizeMoveName(requestedMoveName);
-	for (const asset of resolvedAssets) {
-		for (const ability of asset.abilities) {
-			if (!ability.moves) continue;
-			for (const subMove of Object.values(ability.moves)) {
-				if (subMove?.name && normalizeMoveName(subMove.name) === requestedName) {
-					return subMove;
-				}
-			}
-		}
-	}
-	return null;
-}
-
-async function resolveMoveForRoll(requestedMoveName, resolvedAssets) {
-	const assetMove = findAssetSubMove(resolvedAssets, requestedMoveName);
-	if (assetMove) return assetMove;
-	return resolveMove(requestedMoveName);
-}
-
-// Best-effort extraction of the mechanical effect from an ability's rule text.
-function parseAssetAbilityEffects(text) {
-	const effects = {};
-	const bonusMatch = text.match(/\badd \+(\d+)\b/i);
-	if (bonusMatch) effects.bonus = Number(bonusMatch[1]);
-	if (/\breroll any dice\b/i.test(text)) effects.reroll = true;
-	const momentumMatch = text.match(
-		/take \+(\d+) momentum(?:\s+equal to[^.]+)? on (?:an?|the) ([a-z ]+?)(?=[.,]|$)/i,
-	);
-	if (momentumMatch) {
-		effects.momentumBonus = Number(momentumMatch[1]);
-		effects.momentumCondition = momentumMatch[2].trim().toLocaleLowerCase();
-	}
-	const harmMatch = text.match(/inflict \+(\d+) harm/i);
-	if (harmMatch) effects.harmBonus = Number(harmMatch[1]);
-	const experienceMatch = text.match(/take \+(\d+) experience/i);
-	if (experienceMatch) effects.experienceBonus = Number(experienceMatch[1]);
-	return effects;
-}
-
-function collectAssetEnhancements(move, resolvedAssets) {
-	const candidates = [];
-	for (const asset of resolvedAssets) {
-		for (const ability of asset.abilities) {
-			const entries = ability.enhance_moves;
-			if (!Array.isArray(entries)) continue;
-			for (const entry of entries) {
-				if (entry.roll_type !== move.roll_type) continue;
-				const enhancesList = entry.enhances;
-				if (Array.isArray(enhancesList) && !enhancesList.includes(move._id))
-					continue;
-				candidates.push({
-					assetName: asset.name,
-					text: ability.text,
-					conditionText:
-						entry.trigger?.conditions
-							?.map((condition) => condition.text)
-							.filter(Boolean)
-							.join("; ") || null,
-					effects: parseAssetAbilityEffects(ability.text),
-				});
-			}
-		}
-	}
-	return candidates;
-}
-
-function sumPreRollAssetEffects(selectedCandidates) {
-	let bonus = 0;
-	let reroll = false;
-	for (const candidate of selectedCandidates) {
-		if (candidate.effects.bonus) bonus += candidate.effects.bonus;
-		if (candidate.effects.reroll) reroll = true;
-	}
-	return { bonus, reroll };
-}
-
-function sumConditionalAssetEffects(selectedCandidates, hitType) {
-	let momentum = 0;
-	let harm = 0;
-	let experience = 0;
-	const isHit = hitType === "strong hit" || hitType === "weak hit";
-	for (const candidate of selectedCandidates) {
-		const effects = candidate.effects;
-		if (effects.momentumBonus && effects.momentumCondition) {
-			const condition = effects.momentumCondition;
-			const conditionMet = condition.includes("strong hit")
-				? hitType === "strong hit"
-				: condition.includes("weak hit")
-					? hitType === "weak hit"
-					: condition.includes("hit")
-						? isHit
-						: false;
-			if (conditionMet) momentum += effects.momentumBonus;
-		}
-		if (effects.harmBonus && isHit) harm += effects.harmBonus;
-		if (effects.experienceBonus && isHit) experience += effects.experienceBonus;
-	}
-	return { momentum, harm, experience };
-}
-
-function waitForAssetSelection(panel, candidates, moveName) {
-	const content = panel.querySelector(".ironsworn-roll-content");
-	const actions = panel.querySelector(".ironsworn-roll-actions");
-	content.replaceChildren();
-	actions?.replaceChildren();
-	const title = document.createElement("h2");
-	title.className = "ironsworn-roll-title";
-	title.textContent = `${moveName}: Use an asset ability?`;
-	const list = document.createElement("div");
-	list.className = "ironsworn-asset-choice-list";
-	const selected = new Set();
-	candidates.forEach((candidate, index) => {
-		const button = document.createElement("button");
-		button.type = "button";
-		button.className = "ironsworn-asset-choice-option";
-		const conditionLabel = candidate.conditionText
-			? ` (${candidate.conditionText})`
-			: "";
-		button.textContent = `${candidate.assetName}${conditionLabel}: ${formatRuleText(candidate.text)}`;
-		button.addEventListener("click", () => {
-			button.classList.toggle("ironsworn-choice-selected");
-			if (selected.has(index)) selected.delete(index);
-			else selected.add(index);
-		});
-		list.append(button);
-	});
-	content.append(title, list);
-	return new Promise((resolve) => {
-		const confirmButton = document.createElement("button");
-		confirmButton.type = "button";
-		confirmButton.textContent = "Roll";
-		confirmButton.addEventListener(
-			"click",
-			() => {
-				panel.remove();
-				resolve(candidates.filter((_, index) => selected.has(index)));
-			},
-			{ once: true },
-		);
-		actions.append(confirmButton);
-	});
 }
 
 export async function resolveOracle(oracleName) {
@@ -1163,11 +938,155 @@ function waitForContinue(panel, roll, actionName) {
 	});
 }
 
+function extractChooseBeforeRolling(moveText) {
+	const chooseMatch = moveText.match(
+		/(?:decide before rolling|choose.*?before rolling)(.*?)(?:\.|$)/i,
+	);
+	if (!chooseMatch) return null;
+
+	const optionsText = chooseMatch[1];
+	const options = optionsText
+		.split(/\b(?:or|\/)\b/i)
+		.map((text) => {
+			const cleaned = formatRuleText(text.trim());
+			return cleaned;
+		})
+		.filter((text) => text.length > 0);
+
+	if (options.length >= 2) {
+		return { options };
+	}
+	return null;
+}
+
+function waitForChooseBeforeRolling(panel, choiceData) {
+	return new Promise((resolve) => {
+		const actions = panel.querySelector(".ironsworn-roll-actions");
+		actions.replaceChildren();
+		renderChoicePanel(panel, "Choose Before Rolling");
+
+		const buttons = choiceData.options.map((optionText) => {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.textContent = optionText;
+			button.addEventListener(
+				"click",
+				() => {
+					panel.remove();
+					resolve(optionText);
+				},
+				{ once: true },
+			);
+			actions.append(button);
+		});
+		void buttons;
+	});
+}
+
+function waitForRerollChoice(panel, roll) {
+	return new Promise((resolve) => {
+		const actions = panel.querySelector(".ironsworn-roll-actions");
+		actions.replaceChildren();
+		renderChoicePanel(panel, "Select Die to Reroll");
+
+		const d6Button = document.createElement("button");
+		d6Button.type = "button";
+		d6Button.innerHTML = `<strong>Action Die (d6)</strong><br>Current: ${roll.actionDie}`;
+		d6Button.addEventListener(
+			"click",
+			() => resolve({ dieType: "d6", roll }),
+			{ once: true },
+		);
+		actions.append(d6Button);
+
+		const c1Button = document.createElement("button");
+		c1Button.type = "button";
+		c1Button.innerHTML = `<strong>Challenge Die 1 (d10)</strong><br>Current: ${roll.challengeDice[0]}`;
+		c1Button.addEventListener(
+			"click",
+			() => resolve({ dieType: "challenge-1", roll }),
+			{ once: true },
+		);
+		actions.append(c1Button);
+
+		const c2Button = document.createElement("button");
+		c2Button.type = "button";
+		c2Button.innerHTML = `<strong>Challenge Die 2 (d10)</strong><br>Current: ${roll.challengeDice[1]}`;
+		c2Button.addEventListener(
+			"click",
+			() => resolve({ dieType: "challenge-2", roll }),
+			{ once: true },
+		);
+		actions.append(c2Button);
+
+		const cancelButton = document.createElement("button");
+		cancelButton.type = "button";
+		cancelButton.textContent = "Cancel";
+		cancelButton.style.marginTop = "12px";
+		cancelButton.addEventListener(
+			"click",
+			() => resolve(null),
+			{ once: true },
+		);
+		actions.append(cancelButton);
+	});
+}
+
+function performReroll(roll, rerollChoice) {
+	if (!rerollChoice) return roll;
+
+	const newRoll = { ...roll };
+
+	if (rerollChoice.dieType === "d6") {
+		const newActionDie = rollDie(6);
+		newRoll.actionDie = newActionDie;
+		const actionDieCancelled =
+			newRoll.momentum < 0 && newActionDie === Math.abs(newRoll.momentum);
+		newRoll.actionDieCancelled = actionDieCancelled;
+		const countedActionDie = actionDieCancelled ? 0 : newActionDie;
+		newRoll.playerValue = countedActionDie + newRoll.statsBonus + newRoll.additionalBonus;
+		newRoll.hitType = getHitType(newRoll.playerValue, newRoll.challengeDice);
+		newRoll.losingDice = newRoll.challengeDice.filter(
+			(die) => newRoll.playerValue <= die,
+		);
+		newRoll.canUseMomentum = newRoll.losingDice.some(
+			(die) => newRoll.momentum > die,
+		);
+	} else if (rerollChoice.dieType === "challenge-1") {
+		const newChallengeDie = rollDie(10);
+		newRoll.challengeDice = [
+			newChallengeDie,
+			newRoll.challengeDice[1],
+		];
+		newRoll.hitType = getHitType(newRoll.playerValue, newRoll.challengeDice);
+		newRoll.losingDice = newRoll.challengeDice.filter(
+			(die) => newRoll.playerValue <= die,
+		);
+		newRoll.canUseMomentum = newRoll.losingDice.some(
+			(die) => newRoll.momentum > die,
+		);
+	} else if (rerollChoice.dieType === "challenge-2") {
+		const newChallengeDie = rollDie(10);
+		newRoll.challengeDice = [
+			newRoll.challengeDice[0],
+			newChallengeDie,
+		];
+		newRoll.hitType = getHitType(newRoll.playerValue, newRoll.challengeDice);
+		newRoll.losingDice = newRoll.challengeDice.filter(
+			(die) => newRoll.playerValue <= die,
+		);
+		newRoll.canUseMomentum = newRoll.losingDice.some(
+			(die) => newRoll.momentum > die,
+		);
+	}
+
+	return newRoll;
+}
+
 export async function executeIronswornRoll(args) {
 	const requestedMoveName = String(args?.move_name ?? "").trim();
 	if (!requestedMoveName) throw new Error("move_name is required");
-	const characterAssets = await resolveCharacterAssets(args?.assets);
-	const move = await resolveMoveForRoll(requestedMoveName, characterAssets.resolved);
+	const move = await resolveMove(requestedMoveName);
 	const currentSupply =
 		args?.current_supply !== undefined
 			? normalizeNumber(args.current_supply, "current_supply")
@@ -1241,8 +1160,6 @@ export async function executeIronswornRoll(args) {
 			);
 		}
 		if (penaltyAllocation) response.penalty_allocation = penaltyAllocation;
-		if (characterAssets.unrecognized.length)
-			response.unrecognized_assets = characterAssets.unrecognized;
 		return JSON.stringify(response);
 	}
 	if (move.roll_type === "progress_roll") {
@@ -1264,19 +1181,6 @@ export async function executeIronswornRoll(args) {
 				: null;
 		if (currentProgress === null) {
 			throw new Error("current_progress is required for progress rolls");
-		}
-
-		const progressAssetCandidates = collectAssetEnhancements(
-			move,
-			characterAssets.resolved,
-		);
-		let selectedProgressAssets = [];
-		if (progressAssetCandidates.length > 0) {
-			selectedProgressAssets = await waitForAssetSelection(
-				getPanel(),
-				progressAssetCandidates,
-				move.name,
-			);
 		}
 
 		const panel = getPanel();
@@ -1311,18 +1215,13 @@ export async function executeIronswornRoll(args) {
 			epic: { strong_hit: 5, weak_hit: 4, miss: 0 },
 		};
 
-		const progressAssetEffects = sumConditionalAssetEffects(
-			selectedProgressAssets,
-			roll.hitType,
-		);
 		const response = {
 			move: move.name,
 			hit_type: roll.hitType,
 			isMatch: roll.isMatch,
 			quest_rank: questRank,
 			experience:
-				experienceTable[questRank][roll.hitType.replace(" ", "_")] +
-				progressAssetEffects.experience,
+				experienceTable[questRank][roll.hitType.replace(" ", "_")],
 			outcome: formatRuleText(outcomeText),
 		};
 		if (selectedChoice !== null) response.choice = selectedChoice;
@@ -1330,15 +1229,6 @@ export async function executeIronswornRoll(args) {
 			response.narrative_choices = outcomeChoices.options.map(
 				(option) => option.label,
 			);
-		if (selectedProgressAssets.length > 0)
-			response.assets_used = selectedProgressAssets.map((candidate) => ({
-				asset: candidate.assetName,
-				ability: formatRuleText(candidate.text),
-			}));
-		if (progressAssetEffects.experience)
-			response.asset_experience_bonus = progressAssetEffects.experience;
-		if (characterAssets.unrecognized.length)
-			response.unrecognized_assets = characterAssets.unrecognized;
 		return JSON.stringify(response);
 	}
 	if (move.roll_type !== "action_roll") {
@@ -1356,28 +1246,29 @@ export async function executeIronswornRoll(args) {
 	const stat = normalizeNumber(args?.stat, "stat");
 	if (!Number.isInteger(stat)) throw new Error("stat must be an integer");
 	const actionName = move.name;
-
-	const assetCandidates = collectAssetEnhancements(move, characterAssets.resolved);
-	let selectedAssets = [];
-	if (assetCandidates.length > 0) {
-		selectedAssets = await waitForAssetSelection(
-			getPanel(),
-			assetCandidates,
-			actionName,
-		);
-	}
-	const preRollAssetEffects = sumPreRollAssetEffects(selectedAssets);
+	const offerReroll = Boolean(args?.offer_reroll ?? false);
+	const rerollReason = String(args?.reroll_reason ?? "").trim();
 
 	const rollArgs = {
 		stats_bonus: stat,
 		additional_bonus:
-			normalizeNumber(args.additional_bonus, "additional_bonus") +
-			preRollAssetEffects.bonus,
+			normalizeNumber(args.additional_bonus, "additional_bonus"),
 		momentum: args?.momentum,
 	};
 
 	const panel = getPanel();
 	const settings = getSettings();
+
+	let choiceBeforeRolling = null;
+	const customOptions = Array.isArray(args?.choose_before_rolling_options)
+		? args.choose_before_rolling_options.filter((opt) => String(opt).trim().length > 0)
+		: [];
+
+	if (customOptions.length >= 2) {
+		// Use explicitly provided options from ability
+		choiceBeforeRolling = await waitForChooseBeforeRolling(panel, { options: customOptions });
+	}
+
 	const rollStarted = renderRoll(panel, actionName);
 
 	if (power_user?.movingUI === true) {
@@ -1387,10 +1278,19 @@ export async function executeIronswornRoll(args) {
 
 	if (!settings.autoRoll) await rollStarted;
 	let roll = calculateIronswornRoll(rollArgs);
-	if (preRollAssetEffects.reroll) roll = calculateIronswornRoll(rollArgs);
 	renderDice(panel, roll);
 	await animateRoll(panel, roll);
 
+	let abilityUsed = null;
+	if (offerReroll && rerollReason) {
+		const rerollChoice = await waitForRerollChoice(panel, roll);
+		if (rerollChoice) {
+			roll = performReroll(roll, rerollChoice);
+			abilityUsed = rerollReason;
+			renderDice(panel, roll);
+			await animateRoll(panel, roll);
+		}
+	}
 	const choice =
 		settings.autoContinue &&
 		(roll.hitType === "strong hit" || !roll.canUseMomentum)
@@ -1408,39 +1308,22 @@ export async function executeIronswornRoll(args) {
 	} else {
 		panel.remove();
 	}
-	const conditionalAssetEffects = sumConditionalAssetEffects(
-		selectedAssets,
-		choice.hitType,
-	);
 	const response = {
 		move: move.name,
 		hit_type: choice.hitType,
 		momentum_used: choice.momentumUsed,
 		isMatch: roll.isMatch,
 		outcome: formatRuleText(outcomeText),
+		ability_used: abilityUsed,
 	};
+	if (choiceBeforeRolling !== null)
+		response.choice_before_rolling = choiceBeforeRolling;
 	if (selectedChoice !== null) response.choice = selectedChoice;
 	if (outcomeChoices && !outcomeChoices.playerChoice)
 		response.narrative_choices = outcomeChoices.options.map(
 			(option) => option.label,
 		);
 	if (oracleResults.length > 0) response.oracle_results = oracleResults;
-	if (selectedAssets.length > 0)
-		response.assets_used = selectedAssets.map((candidate) => ({
-			asset: candidate.assetName,
-			ability: formatRuleText(candidate.text),
-		}));
-	if (preRollAssetEffects.bonus)
-		response.asset_bonus_applied = preRollAssetEffects.bonus;
-	if (preRollAssetEffects.reroll) response.asset_reroll_used = true;
-	if (conditionalAssetEffects.momentum)
-		response.asset_momentum_bonus = conditionalAssetEffects.momentum;
-	if (conditionalAssetEffects.harm)
-		response.asset_harm_bonus = conditionalAssetEffects.harm;
-	if (conditionalAssetEffects.experience)
-		response.asset_experience_bonus = conditionalAssetEffects.experience;
-	if (characterAssets.unrecognized.length)
-		response.unrecognized_assets = characterAssets.unrecognized;
 	return JSON.stringify(response);
 }
 
@@ -3721,13 +3604,13 @@ export function registerIronswornRollTool() {
 		name: TOOL_NAME,
 		displayName: "Ironsworn Roll",
 		description:
-			"Roll a Classic Ironsworn move by name. Move names are fuzzy-matched. Supply the stat bonus as an integer, plus any additional bonus and current momentum. The result includes the exact strong hit, weak hit, or miss outcome text from Datasworn. When momentum is greater than a losing challenge die, show the player a choice to reset momentum and remove every losing die below momentum. Wait for that choice before returning. Pass the character's assets so the tool can offer their abilities as an in-panel choice whenever they apply to this move (no need to track once-per-fight limits yourself; the tool offers them every time they are relevant).",
+			"Roll an Ironsworn move by name. Supply the stat bonus as an integer, plus any additional bonus and current momentum. If any ability from asset applies AND require a choice to be used (like if it can only be used once per combat, or has two options), then add it. It will be offered to the player but its effect wont be applied to the roll, just ouputed as is for you to interpret. The result includes the exact strong hit, weak hit, or miss outcome text.",
 		parameters: {
 			type: "object",
 			properties: {
 				move_name: {
 					type: "string",
-					description: "The name of the Classic Ironsworn move.",
+					description: "The name of the Ironsworn move.",
 				},
 				stat: {
 					type: "number",
@@ -3757,24 +3640,23 @@ export function registerIronswornRollTool() {
 					description:
 						"Progress boxes filled on the track (0-10). Required for progress rolls like Fulfill Your Vow or End the Fight. Momentum is ignored on progress rolls per Ironsworn rules.",
 				},
-				assets: {
-					type: "array",
+				offer_reroll: {
+					type: "boolean",
 					description:
-						"The character's equipped assets. Send only the asset name and its level (1-3, how many abilities are marked); the tool looks up the asset's real abilities and offers any that apply to this move as an in-panel choice.",
+						"If true, offer the player the ability to reroll one die (action die or a challenge die) after the initial roll. Used when an ability grants a reroll. Optional.",
+				},
+				reroll_reason: {
+					type: "string",
+					description:
+						"The name and number of the ability that grants the reroll (e.g., 'Beast Slayer (Ability 0)'). Only used when offer_reroll is true. Optional.",
+				},
+				choose_before_rolling_options: {
+					type: "array",
 					items: {
-						type: "object",
-						properties: {
-							name: {
-								type: "string",
-								description: "The asset's name, e.g. Archer or Cave Lion.",
-							},
-							level: {
-								type: "number",
-								description: "How many of the asset's abilities are marked (1-3).",
-							},
-						},
-						required: ["name", "level"],
+						type: "string",
 					},
+					description:
+						"Array of option strings to present to the player before rolling. Used when an ability grants a choice before rolling (e.g., ['Hit them hard', 'Hold them back','You will do +1 harm but weak hit become miss']). Must have at least 2 options to display. Optional.",
 				},
 			},
 			required: ["move_name"],
